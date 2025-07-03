@@ -16,43 +16,33 @@ jobs:
       - name: Extract linked issues from PR body
         id: extract
         run: |
-          # 提取 PR body 的关闭关键字关联的 issue 编号（如 Closes #123）
           echo "issues=$(echo "${{ github.event.pull_request.body }}" | grep -oiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) #([0-9]+)' | sed -E 's/.*#([0-9]+)/\1/g' | tr '\n' ',' | sed 's/,$//')" >> $GITHUB_OUTPUT
 
       - name: Update Project Status to Progress
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OWNER: 你的组织名或用户名
-          PROJECT_NUMBER: 你的项目号
-          REPO: 你的仓库名
+          OWNER: "vegetables-school"
+          PROJECT_NUMBER: "1"
+          REPO: "test-1"
           ISSUES: ${{ steps.extract.outputs.issues }}
         run: |
-          set -e
+          set -xe
 
           if [ -z "$ISSUES" ]; then
             echo "No linked issues found."
             exit 0
           fi
 
-          # 登录 gh
           echo $GH_TOKEN | gh auth login --with-token
 
           # 获取 Project v2 的 id
-          # 组织项目 ORG
           project_id=$(gh api graphql -f query='
             query($login: String!, $number: Int!) {
               organization(login: $login) {
                 projectV2(number: $number) { id }
               }
-            }' -F login=$OWNER -F number=$PROJECT_NUMBER --jq '.data.organization.projectV2.id')
-
-          # # 如果是个人项目 USER, 请用如下命令替换上面
-          # project_id=$(gh api graphql -f query='
-          #   query($login: String!, $number: Int!) {
-          #     user(login: $login) {
-          #       projectV2(number: $number) { id }
-          #     }
-          #   }' -F login=$OWNER -F number=$PROJECT_NUMBER --jq '.data.user.projectV2.id')
+            }' -F login="$OWNER" -F number="$PROJECT_NUMBER" --jq '.data.organization.projectV2.id')
+          echo "project_id: $project_id"
 
           # 获取 Status 字段 id 和 Progress 选项 id
           field_data=$(gh api graphql -f query="
@@ -74,22 +64,23 @@ jobs:
                 }
               }
             }")
+          echo "field_data: $field_data"
+
           status_field_id=$(echo "$field_data" | jq -r '.data.node.fields.nodes[] | select(.name=="Status") | .id')
           progress_option_id=$(echo "$field_data" | jq -r '.data.node.fields.nodes[] | select(.name=="Status") | .options[] | select(.name=="Progress") | .id')
+          echo "status_field_id: $status_field_id"
+          echo "progress_option_id: $progress_option_id"
 
-          # 遍历每个 issue
           IFS=',' read -ra numbers <<< "$ISSUES"
           for issue_number in "${numbers[@]}"; do
-            # 获取 issue node_id
             issue_id=$(gh api graphql -f query="
               query {
                 repository(owner: \"$OWNER\", name: \"$REPO\") {
                   issue(number: $issue_number) { id }
                 }
               }" --jq '.data.repository.issue.id')
+            echo "issue #$issue_number id: $issue_id"
 
-            # 查询项目卡片，找到该 issue 的 project item id
-            # 这里查前 100 条，如需支持更多请补充分页
             item_id=$(gh api graphql -f query="
               query {
                 node(id: \"$project_id\") {
@@ -103,13 +94,13 @@ jobs:
                   }
                 }
               }" | jq -r --arg issue_id "$issue_id" '.data.node.items.nodes[] | select(.content.id==$issue_id) | .id')
+            echo "item_id for issue #$issue_number: $item_id"
 
             if [ -z "$item_id" ]; then
               echo "Issue #$issue_number is not in project, skip."
               continue
             fi
 
-            # 更新状态字段为 Progress
             gh api graphql -f query="
               mutation {
                 updateProjectV2ItemFieldValue(input: {
