@@ -3,18 +3,25 @@ name: List All Issues in Project
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
 jobs:
   list-project-issues:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-      issues: read
 
     steps:
+      - name: Login to GitHub CLI with PAT
+        run: echo "${{ secrets.ORG_PROJECT_TOKEN }}" | gh auth login --with-token
+
+      - name: Check GH CLI Authentication
+        run: gh auth status
+
       - name: Query all issues in the organization project
         env:
-          GH_TOKEN: ${{ secrets.GH_PROJECTS }}
+          GH_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
           OWNER: "vegetables-school"
           PROJECT_NUMBER: "1"
         run: |
