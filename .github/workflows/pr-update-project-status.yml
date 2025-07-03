@@ -5,232 +5,123 @@ on:
     types: [opened, ready_for_review, reopened, synchronize]
 
 jobs:
-  update-project-status:
+  update-project:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: read
       issues: read
+      # 需要有 project 权限
+      project: write
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: lts/*
-
-      - name: Extract Linked Issues from PR Body
+      - name: Extract linked issues from PR body
         id: extract
         run: |
-          echo "body<<EOF" >> $GITHUB_OUTPUT
-          echo "${{ github.event.pull_request.body }}" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          # 提取 PR body 的关闭关键字关联的 issue 编号（如 Closes #123）
+          echo "issues=$(echo "${{ github.event.pull_request.body }}" | grep -oiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) #([0-9]+)' | sed -E 's/.*#([0-9]+)/\1/g' | tr '\n' ',' | sed 's/,$//')" >> $GITHUB_OUTPUT
 
-      - name: Parse Linked Issues
-        id: parse
-        run: |
-          echo "$(echo '${{ steps.extract.outputs.body }}' | grep -oiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) #([0-9]+)' | sed -E 's/.*#([0-9]+)/\1/g' | tr '\n' ',' | sed 's/,$//')" > issues.txt
-          echo "issues=$(cat issues.txt)" >> $GITHUB_OUTPUT
-
-      - name: Run Project Updater
+      - name: Update Project Status to Progress
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PROJECT_NUMBER: "1"
-          OWNER: "vegetables-school"
-          REPO: "test-1"
+          OWNER: 你的组织名或用户名
+          PROJECT_NUMBER: 你的项目号
+          REPO: 你的仓库名
+          ISSUES: ${{ steps.extract.outputs.issues }}
         run: |
-          node <<'EOF'
-          const { execSync } = require("child_process");
+          set -e
 
-          const ghToken = process.env.GH_TOKEN;
-          const projectNumber = process.env.PROJECT_NUMBER;
-          const owner = process.env.OWNER;
-          const repo = process.env.REPO;
-          const issuesStr = "${{ steps.parse.outputs.issues }}";
+          if [ -z "$ISSUES" ]; then
+            echo "No linked issues found."
+            exit 0
+          fi
 
-          if (!issuesStr) {
-            console.log("No linked issues found.");
-            process.exit(0);
-          }
+          # 登录 gh
+          echo $GH_TOKEN | gh auth login --with-token
 
-          const issueNumbers = issuesStr.split(",").filter(Boolean);
-          const fetch = require("node-fetch");
-
-          // 1. 获取 Project v2 ID
-          async function getProjectV2Id() {
-            const query = `
-              query {
-                organization(login: "${owner}") {
-                  projectV2(number: ${projectNumber}) {
-                    id
-                  }
-                }
+          # 获取 Project v2 的 id
+          # 组织项目 ORG
+          project_id=$(gh api graphql -f query='
+            query($login: String!, $number: Int!) {
+              organization(login: $login) {
+                projectV2(number: $number) { id }
               }
-            `;
-            const res = await fetch("https://api.github.com/graphql", {
-              method: "POST",
-              headers: {
-                "Authorization": `Bearer ${ghToken}`,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({ query }),
-            });
-            const data = await res.json();
-            return data.data.organization.projectV2.id;
-          }
+            }' -F login=$OWNER -F number=$PROJECT_NUMBER --jq '.data.organization.projectV2.id')
 
-          // 2. 获取 Project 的所有卡片 items 找到指定 Issue 的 project item id
-          async function getProjectItemId(projectId, issueNumber) {
-            const issueIdQuery = `
-              query {
-                repository(owner: "${owner}", name: "${repo}") {
-                  issue(number: ${issueNumber}) {
-                    id
-                  }
-                }
-              }
-            `;
-            const issueRes = await fetch("https://api.github.com/graphql", {
-              method: "POST",
-              headers: {
-                "Authorization": `Bearer ${ghToken}`,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({ query: issueIdQuery }),
-            });
-            const issueId = (await issueRes.json()).data.repository.issue.id;
+          # # 如果是个人项目 USER, 请用如下命令替换上面
+          # project_id=$(gh api graphql -f query='
+          #   query($login: String!, $number: Int!) {
+          #     user(login: $login) {
+          #       projectV2(number: $number) { id }
+          #     }
+          #   }' -F login=$OWNER -F number=$PROJECT_NUMBER --jq '.data.user.projectV2.id')
 
-            // 注意这里分页只查前50条 如需更多请加循环/分页
-            const projectItemsQuery = `
-              query {
-                node(id: "${projectId}") {
-                  ... on ProjectV2 {
-                    items(first: 50) {
-                      nodes {
+          # 获取 Status 字段 id 和 Progress 选项 id
+          field_data=$(gh api graphql -f query="
+            query {
+              node(id: \"$project_id\") {
+                ... on ProjectV2 {
+                  fields(first: 20) {
+                    nodes {
+                      ... on ProjectV2SingleSelectField {
                         id
-                        content {
-                          ... on Issue { id number }
-                        }
-                        fieldValues(first: 20) {
-                          nodes {
-                            ... on ProjectV2ItemFieldSingleSelectValue {
-                              field {
-                                ... on ProjectV2SingleSelectField { id name }
-                              }
-                              name
-                              id
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            `;
-            const projectRes = await fetch("https://api.github.com/graphql", {
-              method: "POST",
-              headers: {
-                "Authorization": `Bearer ${ghToken}`,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({ query: projectItemsQuery }),
-            });
-            const items = (await projectRes.json()).data.node.items.nodes;
-            // 找到对应的卡片 id
-            for (const item of items) {
-              if (item.content && item.content.id === issueId) {
-                return { projectItemId: item.id, fieldValues: item.fieldValues.nodes };
-              }
-            }
-            return null;
-          }
-
-          // 3. 获取 Status 字段 id 及 'Progress' 选项 id
-          async function getStatusFieldInfo(projectId) {
-            const query = `
-              query {
-                node(id: "${projectId}") {
-                  ... on ProjectV2 {
-                    fields(first: 20) {
-                      nodes {
-                        ... on ProjectV2SingleSelectField {
+                        name
+                        options {
                           id
                           name
-                          options {
-                            id
-                            name
-                          }
                         }
                       }
                     }
                   }
                 }
               }
-            `;
-            const res = await fetch("https://api.github.com/graphql", {
-              method: "POST",
-              headers: {
-                "Authorization": `Bearer ${ghToken}`,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({ query }),
-            });
-            const fields = (await res.json()).data.node.fields.nodes;
-            for (const field of fields) {
-              if (field.name.toLowerCase() === "status") {
-                const progressOpt = field.options.find(o => o.name.toLowerCase() === "progress");
-                return { fieldId: field.id, optionId: progressOpt ? progressOpt.id : null };
-              }
-            }
-            return {};
-          }
+            }")
+          status_field_id=$(echo "$field_data" | jq -r '.data.node.fields.nodes[] | select(.name=="Status") | .id')
+          progress_option_id=$(echo "$field_data" | jq -r '.data.node.fields.nodes[] | select(.name=="Status") | .options[] | select(.name=="Progress") | .id')
 
-          // 4. 更新项目卡片字段
-          async function updateStatus(projectItemId, fieldId, optionId) {
-            const mutation = `
-              mutation {
-                updateProjectV2ItemFieldValue(input: {
-                  projectId: "${projectId}"
-                  itemId: "${projectItemId}"
-                  fieldId: "${fieldId}"
-                  value: { singleSelectOptionId: "${optionId}" }
-                }) {
-                  projectV2Item {
-                    id
+          # 遍历每个 issue
+          IFS=',' read -ra numbers <<< "$ISSUES"
+          for issue_number in "${numbers[@]}"; do
+            # 获取 issue node_id
+            issue_id=$(gh api graphql -f query="
+              query {
+                repository(owner: \"$OWNER\", name: \"$REPO\") {
+                  issue(number: $issue_number) { id }
+                }
+              }" --jq '.data.repository.issue.id')
+
+            # 查询项目卡片，找到该 issue 的 project item id
+            # 这里查前 100 条，如需支持更多请补充分页
+            item_id=$(gh api graphql -f query="
+              query {
+                node(id: \"$project_id\") {
+                  ... on ProjectV2 {
+                    items(first: 100) {
+                      nodes {
+                        id
+                        content { ... on Issue { id number } }
+                      }
+                    }
                   }
                 }
-              }
-            `;
-            await fetch("https://api.github.com/graphql", {
-              method: "POST",
-              headers: {
-                "Authorization": `Bearer ${ghToken}`,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({ query: mutation }),
-            });
-            console.log(`Updated status to 'Progress' for item ${projectItemId}`);
-          }
+              }" | jq -r --arg issue_id "$issue_id" '.data.node.items.nodes[] | select(.content.id==$issue_id) | .id')
 
-          // 主流程
-          (async () => {
-            const projectId = await getProjectV2Id();
-            const statusInfo = await getStatusFieldInfo(projectId);
-            if (!statusInfo.fieldId || !statusInfo.optionId) {
-              console.log("Can't find 'Status' field or 'Progress' option.");
-              process.exit(0);
-            }
+            if [ -z "$item_id" ]; then
+              echo "Issue #$issue_number is not in project, skip."
+              continue
+            fi
 
-            for (const issueNumber of issueNumbers) {
-              const itemInfo = await getProjectItemId(projectId, issueNumber);
-              if (!itemInfo) {
-                console.log(`Issue #${issueNumber} is not in the project.`);
-                continue;
-              }
-              await updateStatus(itemInfo.projectItemId, statusInfo.fieldId, statusInfo.optionId);
-            }
-          })();
-          EOF
+            # 更新状态字段为 Progress
+            gh api graphql -f query="
+              mutation {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: \"$project_id\"
+                  itemId: \"$item_id\"
+                  fieldId: \"$status_field_id\"
+                  value: { singleSelectOptionId: \"$progress_option_id\" }
+                }) {
+                  projectV2Item { id }
+                }
+              }"
+            echo "Updated issue #$issue_number status to Progress."
+          done
