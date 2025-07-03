@@ -33,8 +33,6 @@ jobs:
             exit 0
           fi
 
-          echo $GH_TOKEN | gh auth login --with-token
-
           # 获取 Project v2 的 id
           project_id=$(gh api graphql -f query='
             query($login: String!, $number: Int!) {
