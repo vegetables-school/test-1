@@ -11,8 +11,6 @@ jobs:
       contents: read
       pull-requests: read
       issues: read
-      # 需要有 project 权限
-      project: write
 
     steps:
       - name: Extract linked issues from PR body
