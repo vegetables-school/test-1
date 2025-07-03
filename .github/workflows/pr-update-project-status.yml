@@ -71,6 +71,7 @@ jobs:
 
           IFS=',' read -ra numbers <<< "$ISSUES"
           for issue_number in "${numbers[@]}"; do
+            echo "Processing issue_number: $issue_number"
             issue_id=$(gh api graphql -f query="
               query {
                 repository(owner: \"$OWNER\", name: \"$REPO\") {
