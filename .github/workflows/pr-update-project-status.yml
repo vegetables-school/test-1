@@ -20,7 +20,7 @@ jobs:
 
       - name: Update Project Status to Progress
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PROJECTS }}
           OWNER: "vegetables-school"
           PROJECT_NUMBER: "1"
           REPO: "test-1"
